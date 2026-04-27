@@ -473,9 +473,8 @@ if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_all))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
 
-    print("Bot V4 PRO lancé 🔥")
+    print("Bot V6 Smart Money lancé 🔥")
     app.run_polling()
