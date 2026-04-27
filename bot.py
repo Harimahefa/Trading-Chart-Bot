@@ -23,7 +23,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot V9 BTC running")
+        self.wfile.write(b"Bot V9 BTC Coinbase running")
 
 
 def run_health_server():
@@ -33,34 +33,54 @@ def run_health_server():
 
 
 # =========================
-# START
+# TELEGRAM START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 Bot V9 BTC HYBRID Ready 🔥\n"
         "Alefaso screenshot BTC chart.\n\n"
-        "Bot dia haka prix réel BTC/USDT + hanao analyse image."
+        "Bot dia haka prix réel BTC/USD amin'ny Coinbase API + hanao analyse image."
     )
 
 
 # =========================
-# BINANCE API BTC
+# COINBASE API BTC
 # =========================
-def fetch_binance_klines(symbol="BTCUSDT", interval="15m", limit=120):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+def fetch_btc_klines_coinbase(granularity=900):
+    """
+    Coinbase candles:
+    granularity 900 = 15 minutes
+    response format: [time, low, high, open, close, volume]
+    """
+    url = (
+        "https://api.exchange.coinbase.com/products/"
+        f"BTC-USD/candles?granularity={granularity}"
+    )
 
-    with urllib.request.urlopen(url, timeout=15) as response:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        },
+    )
+
+    with urllib.request.urlopen(req, timeout=15) as response:
         data = json.loads(response.read().decode())
 
+    data = sorted(data, key=lambda x: x[0])
+
     candles = []
-    for k in data:
-        candles.append({
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
-        })
+    for k in data[-120:]:
+        candles.append(
+            {
+                "open": float(k[3]),
+                "high": float(k[2]),
+                "low": float(k[1]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            }
+        )
 
     return candles
 
@@ -117,7 +137,7 @@ def atr(candles, period=14):
         tr = max(
             high - low,
             abs(high - prev_close),
-            abs(low - prev_close)
+            abs(low - prev_close),
         )
         trs.append(tr)
 
@@ -125,7 +145,7 @@ def atr(candles, period=14):
 
 
 def market_data_btc():
-    candles = fetch_binance_klines("BTCUSDT", "15m", 120)
+    candles = fetch_btc_klines_coinbase(900)
 
     closes = [c["close"] for c in candles]
     highs = [c["high"] for c in candles]
@@ -157,7 +177,7 @@ def market_data_btc():
         rsi_state = "BEARISH"
 
     return {
-        "price": price,
+        "price": round(price, 2),
         "ema20": round(ema20, 2),
         "ema50": round(ema50, 2),
         "rsi": rsi14,
@@ -310,7 +330,6 @@ def build_trade_plan(image_result, market):
     confidence = 50
     reasons = []
 
-    # Confluence API + image
     if api_trend == "BULLISH" and visual_trend == "BULLISH":
         confidence += 20
         reasons.append("API trend + image trend bullish")
@@ -341,8 +360,12 @@ def build_trade_plan(image_result, market):
 
     confidence = max(40, min(88, confidence))
 
-    # Décision signal
-    if api_trend == "BULLISH" and visual_trend == "BULLISH" and rsi_value < 70 and visual_zone != "PROCHE RESISTANCE":
+    if (
+        api_trend == "BULLISH"
+        and visual_trend == "BULLISH"
+        and rsi_value < 70
+        and visual_zone != "PROCHE RESISTANCE"
+    ):
         signal = "BUY"
         entry = round(price, 2)
         sl = round(price - (atr_value * 1.5), 2)
@@ -352,7 +375,12 @@ def build_trade_plan(image_result, market):
         invalidation = "Signal invalidé si cassure forte sous EMA20 ou sous support récent."
         conseil = "Attendre un petit pullback ou bougie de confirmation avant BUY."
 
-    elif api_trend == "BEARISH" and visual_trend == "BEARISH" and rsi_value > 30 and visual_zone != "PROCHE SUPPORT":
+    elif (
+        api_trend == "BEARISH"
+        and visual_trend == "BEARISH"
+        and rsi_value > 30
+        and visual_zone != "PROCHE SUPPORT"
+    ):
         signal = "SELL"
         entry = round(price, 2)
         sl = round(price + (atr_value * 1.5), 2)
@@ -419,10 +447,18 @@ def annotate_image(image_result, plan, output_path):
     low_y = image_result["liquidity_low_y"]
 
     draw.line((x1, high_y, x2, high_y), fill="red", width=4)
-    draw.text((x1 + 10, max(0, high_y - 25)), "LIQUIDITY HIGH / RESISTANCE", fill="red")
+    draw.text(
+        (x1 + 10, max(0, high_y - 25)),
+        "LIQUIDITY HIGH / RESISTANCE",
+        fill="red",
+    )
 
     draw.line((x1, low_y, x2, low_y), fill="green", width=4)
-    draw.text((x1 + 10, low_y + 8), "LIQUIDITY LOW / SUPPORT", fill="green")
+    draw.text(
+        (x1 + 10, low_y + 8),
+        "LIQUIDITY LOW / SUPPORT",
+        fill="green",
+    )
 
     w, h = img.size
     signal = plan["signal"]
@@ -433,7 +469,7 @@ def annotate_image(image_result, plan, output_path):
         draw.text((x1 + 10, int(h * 0.56)), "BUY / PULLBACK ZONE", fill=color)
         draw.polygon(
             [(w * 0.80, h * 0.52), (w * 0.74, h * 0.64), (w * 0.86, h * 0.64)],
-            fill=color
+            fill=color,
         )
     elif "SELL" in signal:
         color = "red"
@@ -441,7 +477,7 @@ def annotate_image(image_result, plan, output_path):
         draw.text((x1 + 10, int(h * 0.26)), "SELL / PULLBACK ZONE", fill=color)
         draw.polygon(
             [(w * 0.80, h * 0.66), (w * 0.74, h * 0.54), (w * 0.86, h * 0.54)],
-            fill=color
+            fill=color,
         )
     else:
         draw.text((w * 0.68, h * 0.65), "WAIT / NO CLEAN ENTRY", fill="yellow")
@@ -479,7 +515,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔥 ANALYSE PRO V9 BTC HYBRID
 
 📊 ACTIF:
-BTC/USDT
+BTC/USD
 
 💰 DATA MARCHÉ RÉELLE:
 Prix actuel: {market['price']}
@@ -552,5 +588,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
 
-    print("Bot V9 BTC Hybrid lancé 🔥")
+    print("Bot V9 BTC Hybrid Coinbase lancé 🔥")
     app.run_polling()
