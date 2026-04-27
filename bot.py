@@ -10,7 +10,7 @@ from PIL import Image
 # =========================
 # CONFIG
 # =========================
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("8225959243:AAFPByF33ZXIH69oekdqmcKudU8EDft5gJc")
 
 
 # =========================
