@@ -1,13 +1,19 @@
 import os
+import json
 import threading
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = (
+    os.getenv("TOKEN")
+    or os.getenv("BOT_TOKEN")
+    or os.getenv("TELEGRAM_TOKEN")
+)
 
 
 # =========================
@@ -17,7 +23,7 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot V6 running")
+        self.wfile.write(b"Bot V9 BTC running")
 
 
 def run_health_server():
@@ -31,45 +37,215 @@ def run_health_server():
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📊 Chart Vision Bot V6 SMC Ready 🔥\nAlefaso screenshot chart."
+        "📊 Bot V9 BTC HYBRID Ready 🔥\n"
+        "Alefaso screenshot BTC chart.\n\n"
+        "Bot dia haka prix réel BTC/USDT + hanao analyse image."
     )
+
+
+# =========================
+# BINANCE API BTC
+# =========================
+def fetch_binance_klines(symbol="BTCUSDT", interval="15m", limit=120):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+
+    with urllib.request.urlopen(url, timeout=15) as response:
+        data = json.loads(response.read().decode())
+
+    candles = []
+    for k in data:
+        candles.append({
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        })
+
+    return candles
+
+
+def ema(values, period):
+    if len(values) < period:
+        return values[-1]
+
+    multiplier = 2 / (period + 1)
+    ema_value = sum(values[:period]) / period
+
+    for price in values[period:]:
+        ema_value = (price - ema_value) * multiplier + ema_value
+
+    return ema_value
+
+
+def rsi(values, period=14):
+    if len(values) <= period:
+        return 50
+
+    gains = []
+    losses = []
+
+    for i in range(1, len(values)):
+        diff = values[i] - values[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+
+    if avg_loss == 0:
+        return 100
+
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
+
+
+def atr(candles, period=14):
+    if len(candles) <= period:
+        return 0
+
+    trs = []
+    for i in range(1, len(candles)):
+        high = candles[i]["high"]
+        low = candles[i]["low"]
+        prev_close = candles[i - 1]["close"]
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close)
+        )
+        trs.append(tr)
+
+    return round(sum(trs[-period:]) / period, 2)
+
+
+def market_data_btc():
+    candles = fetch_binance_klines("BTCUSDT", "15m", 120)
+
+    closes = [c["close"] for c in candles]
+    highs = [c["high"] for c in candles]
+    lows = [c["low"] for c in candles]
+
+    price = closes[-1]
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    rsi14 = rsi(closes, 14)
+    atr14 = atr(candles, 14)
+
+    recent_high = max(highs[-30:])
+    recent_low = min(lows[-30:])
+
+    if price > ema20 > ema50:
+        api_trend = "BULLISH"
+    elif price < ema20 < ema50:
+        api_trend = "BEARISH"
+    else:
+        api_trend = "NEUTRAL"
+
+    if rsi14 > 65:
+        rsi_state = "OVERBOUGHT"
+    elif rsi14 < 35:
+        rsi_state = "OVERSOLD"
+    elif rsi14 > 50:
+        rsi_state = "BULLISH"
+    else:
+        rsi_state = "BEARISH"
+
+    return {
+        "price": price,
+        "ema20": round(ema20, 2),
+        "ema50": round(ema50, 2),
+        "rsi": rsi14,
+        "atr": atr14,
+        "recent_high": round(recent_high, 2),
+        "recent_low": round(recent_low, 2),
+        "api_trend": api_trend,
+        "rsi_state": rsi_state,
+    }
 
 
 # =========================
 # IMAGE ANALYSIS
 # =========================
-def analyze_smc(image_path):
+def analyze_image_chart(image_path):
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
 
-    # Crop zone chart principale
-    x1, y1, x2, y2 = int(w * 0.05), int(h * 0.12), int(w * 0.90), int(h * 0.68)
+    x1 = int(w * 0.05)
+    y1 = int(h * 0.12)
+    x2 = int(w * 0.90)
+    y2 = int(h * 0.68)
+
     chart = img.crop((x1, y1, x2, y2))
     cw, ch = chart.size
 
-    def dark_points(part):
+    def is_chart_pixel(r, g, b):
+        return r < 220 or g < 220 or b < 220
+
+    def points(part):
         pts = []
         for y in range(part.size[1]):
             for x in range(part.size[0]):
                 r, g, b = part.getpixel((x, y))
-                if r < 210 or g < 210 or b < 210:
+                if is_chart_pixel(r, g, b):
                     pts.append((x, y, r, g, b))
         return pts
 
-    def avg_y_zone(x_start, x_end):
-        part = chart.crop((x_start, 0, x_end, ch))
-        pts = dark_points(part)
+    def avg_y(part):
+        pts = points(part)
         if not pts:
-            return ch / 2
+            return part.size[1] / 2
         return sum(p[1] for p in pts) / len(pts)
 
-    left_y = avg_y_zone(0, int(cw * 0.30))
-    mid_y = avg_y_zone(int(cw * 0.35), int(cw * 0.65))
-    right_y = avg_y_zone(int(cw * 0.70), cw)
-    last_y = avg_y_zone(int(cw * 0.85), cw)
+    def pressure(part):
+        pts = points(part)
+        bull = 0
+        bear = 0
 
-    all_pts = dark_points(chart)
-    ys = [p[1] for p in all_pts]
+        for x, y, r, g, b in pts:
+            if g > r + 20 or b > r + 20:
+                bull += 1
+            elif r > g + 20 or r > b + 20:
+                bear += 1
+
+        if bull > bear * 1.25:
+            return "BULLISH"
+        elif bear > bull * 1.25:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    left = chart.crop((0, 0, int(cw * 0.30), ch))
+    mid = chart.crop((int(cw * 0.35), 0, int(cw * 0.65), ch))
+    right = chart.crop((int(cw * 0.70), 0, cw, ch))
+    last = chart.crop((int(cw * 0.85), 0, cw, ch))
+
+    left_y = avg_y(left)
+    mid_y = avg_y(mid)
+    right_y = avg_y(right)
+
+    if right_y < left_y - 12:
+        visual_trend = "BULLISH"
+    elif right_y > left_y + 12:
+        visual_trend = "BEARISH"
+    else:
+        visual_trend = "RANGE"
+
+    if right_y < mid_y - 8:
+        momentum = "BULLISH"
+    elif right_y > mid_y + 8:
+        momentum = "BEARISH"
+    else:
+        momentum = "NEUTRAL"
+
+    recent_pressure = pressure(last)
+
+    pts_all = points(chart)
+    ys = [p[1] for p in pts_all]
 
     if ys:
         liquidity_high_y = min(ys)
@@ -78,130 +254,203 @@ def analyze_smc(image_path):
         liquidity_high_y = int(ch * 0.25)
         liquidity_low_y = int(ch * 0.75)
 
-    # Trend
-    if right_y < left_y - 10:
-        trend = "UP"
-    elif right_y > left_y + 10:
-        trend = "DOWN"
-    else:
-        trend = "RANGE"
+    price_y = right_y
 
-    # Momentum
-    if right_y < mid_y - 6:
-        momentum = "BULLISH"
-    elif right_y > mid_y + 6:
-        momentum = "BEARISH"
+    if price_y <= liquidity_high_y + 30:
+        visual_zone = "PROCHE RESISTANCE"
+    elif price_y >= liquidity_low_y - 30:
+        visual_zone = "PROCHE SUPPORT"
     else:
-        momentum = "NEUTRAL"
+        visual_zone = "MILIEU"
 
-    # BOS / CHoCH approximatif
-    if trend == "UP" and right_y < mid_y:
+    if visual_trend == "BULLISH" and momentum == "BULLISH":
         structure = "BOS haussier possible"
-    elif trend == "DOWN" and right_y > mid_y:
+    elif visual_trend == "BEARISH" and momentum == "BEARISH":
         structure = "BOS baissier possible"
-    elif trend == "UP" and momentum == "BEARISH":
+    elif visual_trend == "BULLISH" and momentum == "BEARISH":
         structure = "CHoCH baissier possible"
-    elif trend == "DOWN" and momentum == "BULLISH":
+    elif visual_trend == "BEARISH" and momentum == "BULLISH":
         structure = "CHoCH haussier possible"
     else:
-        structure = "Structure neutre"
-
-    # Order Block zone approximative
-    if trend == "UP":
-        ob_top = int(ch * 0.60)
-        ob_bottom = int(ch * 0.75)
-        signal = "BUY"
-        entry = "Buy sur retour dans Order Block / pullback"
-        sl = "Sous liquidity low"
-        tp = "Vers liquidity high"
-        confidence = 78 if momentum == "BULLISH" else 65
-    elif trend == "DOWN":
-        ob_top = int(ch * 0.25)
-        ob_bottom = int(ch * 0.40)
-        signal = "SELL"
-        entry = "Sell sur retour dans Order Block / pullback"
-        sl = "Au-dessus liquidity high"
-        tp = "Vers liquidity low"
-        confidence = 78 if momentum == "BEARISH" else 65
-    else:
-        ob_top = int(ch * 0.45)
-        ob_bottom = int(ch * 0.58)
-        signal = "WAIT"
-        entry = "Attendre BOS ou CHoCH clair"
-        sl = "Non défini"
-        tp = "Non défini"
-        confidence = 55
+        structure = "Structure neutre / range"
 
     return {
         "img": img,
-        "crop": (x1, y1, x2, y2),
-        "trend": trend,
+        "x1": x1,
+        "x2": x2,
+        "y1": y1,
+        "y2": y2,
+        "visual_trend": visual_trend,
         "momentum": momentum,
+        "pressure": recent_pressure,
+        "visual_zone": visual_zone,
         "structure": structure,
-        "signal": signal,
-        "confidence": confidence,
-        "entry": entry,
-        "sl": sl,
-        "tp": tp,
         "liquidity_high_y": y1 + liquidity_high_y,
         "liquidity_low_y": y1 + liquidity_low_y,
-        "ob_top": y1 + ob_top,
-        "ob_bottom": y1 + ob_bottom,
-        "chart_x1": x1,
-        "chart_x2": x2,
     }
 
 
 # =========================
-# ANNOTATION
+# DECISION ENGINE
 # =========================
-def annotate_chart(result, output_path):
-    img = result["img"].copy()
+def build_trade_plan(image_result, market):
+    visual_trend = image_result["visual_trend"]
+    momentum = image_result["momentum"]
+    pressure = image_result["pressure"]
+    visual_zone = image_result["visual_zone"]
+
+    price = market["price"]
+    atr_value = market["atr"]
+    api_trend = market["api_trend"]
+    rsi_state = market["rsi_state"]
+    rsi_value = market["rsi"]
+    recent_high = market["recent_high"]
+    recent_low = market["recent_low"]
+
+    confidence = 50
+    reasons = []
+
+    # Confluence API + image
+    if api_trend == "BULLISH" and visual_trend == "BULLISH":
+        confidence += 20
+        reasons.append("API trend + image trend bullish")
+    elif api_trend == "BEARISH" and visual_trend == "BEARISH":
+        confidence += 20
+        reasons.append("API trend + image trend bearish")
+    else:
+        confidence -= 5
+        reasons.append("API et image pas totalement alignés")
+
+    if momentum == "BULLISH":
+        confidence += 8
+        reasons.append("Momentum image bullish")
+    elif momentum == "BEARISH":
+        confidence += 8
+        reasons.append("Momentum image bearish")
+
+    if pressure == "BULLISH" and api_trend == "BULLISH":
+        confidence += 8
+        reasons.append("Pression récente acheteuse")
+    elif pressure == "BEARISH" and api_trend == "BEARISH":
+        confidence += 8
+        reasons.append("Pression récente vendeuse")
+
+    if rsi_state in ["OVERBOUGHT", "OVERSOLD"]:
+        confidence -= 8
+        reasons.append(f"RSI en zone extrême: {rsi_state}")
+
+    confidence = max(40, min(88, confidence))
+
+    # Décision signal
+    if api_trend == "BULLISH" and visual_trend == "BULLISH" and rsi_value < 70 and visual_zone != "PROCHE RESISTANCE":
+        signal = "BUY"
+        entry = round(price, 2)
+        sl = round(price - (atr_value * 1.5), 2)
+        tp1 = round(price + (atr_value * 1.5), 2)
+        tp2 = round(price + (atr_value * 3.0), 2)
+        scenario = "Continuation haussière probable si BTC garde EMA20/EMA50 et confirme le pullback."
+        invalidation = "Signal invalidé si cassure forte sous EMA20 ou sous support récent."
+        conseil = "Attendre un petit pullback ou bougie de confirmation avant BUY."
+
+    elif api_trend == "BEARISH" and visual_trend == "BEARISH" and rsi_value > 30 and visual_zone != "PROCHE SUPPORT":
+        signal = "SELL"
+        entry = round(price, 2)
+        sl = round(price + (atr_value * 1.5), 2)
+        tp1 = round(price - (atr_value * 1.5), 2)
+        tp2 = round(price - (atr_value * 3.0), 2)
+        scenario = "Continuation baissière probable si BTC rejette la résistance ou EMA20."
+        invalidation = "Signal invalidé si cassure forte au-dessus EMA50 ou résistance récente."
+        conseil = "Attendre pullback + rejet avant SELL."
+
+    elif visual_zone == "PROCHE SUPPORT" and pressure == "BULLISH":
+        signal = "BUY ATTENTE"
+        entry = round(price, 2)
+        sl = round(recent_low - (atr_value * 0.5), 2)
+        tp1 = round(price + atr_value, 2)
+        tp2 = round(recent_high, 2)
+        scenario = "Rebond possible sur support après prise de liquidité basse."
+        invalidation = "Cassure nette sous le support récent."
+        conseil = "Entrée agressive seulement si bougie verte de confirmation."
+
+    elif visual_zone == "PROCHE RESISTANCE" and pressure == "BEARISH":
+        signal = "SELL ATTENTE"
+        entry = round(price, 2)
+        sl = round(recent_high + (atr_value * 0.5), 2)
+        tp1 = round(price - atr_value, 2)
+        tp2 = round(recent_low, 2)
+        scenario = "Rejet possible sur résistance après prise de liquidité haute."
+        invalidation = "Cassure nette au-dessus de la résistance récente."
+        conseil = "Entrée agressive seulement si rejet confirmé."
+
+    else:
+        signal = "WAIT"
+        entry = "Non validée"
+        sl = "Non défini"
+        tp1 = "Non défini"
+        tp2 = "Non défini"
+        scenario = "Confluence insuffisante entre image et data marché."
+        invalidation = "Aucun setup propre pour le moment."
+        conseil = "Attendre BOS/CHoCH clair, pullback ou rejet confirmé."
+
+    return {
+        "signal": signal,
+        "confidence": confidence,
+        "entry": entry,
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "scenario": scenario,
+        "invalidation": invalidation,
+        "conseil": conseil,
+        "reasons": reasons,
+    }
+
+
+# =========================
+# ANNOTATION IMAGE
+# =========================
+def annotate_image(image_result, plan, output_path):
+    img = image_result["img"].copy()
     draw = ImageDraw.Draw(img)
 
-    x1 = result["chart_x1"]
-    x2 = result["chart_x2"]
-    high_y = result["liquidity_high_y"]
-    low_y = result["liquidity_low_y"]
-    ob_top = result["ob_top"]
-    ob_bottom = result["ob_bottom"]
+    x1 = image_result["x1"]
+    x2 = image_result["x2"]
+    high_y = image_result["liquidity_high_y"]
+    low_y = image_result["liquidity_low_y"]
 
-    signal = result["signal"]
-
-    # Liquidity lines
     draw.line((x1, high_y, x2, high_y), fill="red", width=4)
-    draw.text((x1 + 10, high_y - 25), "Liquidity High / Resistance", fill="red")
+    draw.text((x1 + 10, max(0, high_y - 25)), "LIQUIDITY HIGH / RESISTANCE", fill="red")
 
     draw.line((x1, low_y, x2, low_y), fill="green", width=4)
-    draw.text((x1 + 10, low_y + 5), "Liquidity Low / Support", fill="green")
+    draw.text((x1 + 10, low_y + 8), "LIQUIDITY LOW / SUPPORT", fill="green")
 
-    # Order Block rectangle
-    ob_color = "green" if signal == "BUY" else "red" if signal == "SELL" else "yellow"
-    draw.rectangle((x1, ob_top, x2, ob_bottom), outline=ob_color, width=4)
-    draw.text((x1 + 10, ob_top + 5), "Order Block zone", fill=ob_color)
-
-    # Signal arrow
     w, h = img.size
-    if signal == "BUY":
+    signal = plan["signal"]
+
+    if "BUY" in signal:
+        color = "green"
+        draw.rectangle((x1, int(h * 0.55), x2, int(h * 0.68)), outline=color, width=4)
+        draw.text((x1 + 10, int(h * 0.56)), "BUY / PULLBACK ZONE", fill=color)
         draw.polygon(
-            [(w * 0.78, h * 0.55), (w * 0.72, h * 0.65), (w * 0.84, h * 0.65)],
-            fill="green",
+            [(w * 0.80, h * 0.52), (w * 0.74, h * 0.64), (w * 0.86, h * 0.64)],
+            fill=color
         )
-        draw.text((w * 0.70, h * 0.68), "BUY ZONE", fill="green")
-    elif signal == "SELL":
+    elif "SELL" in signal:
+        color = "red"
+        draw.rectangle((x1, int(h * 0.25), x2, int(h * 0.38)), outline=color, width=4)
+        draw.text((x1 + 10, int(h * 0.26)), "SELL / PULLBACK ZONE", fill=color)
         draw.polygon(
-            [(w * 0.78, h * 0.65), (w * 0.72, h * 0.55), (w * 0.84, h * 0.55)],
-            fill="red",
+            [(w * 0.80, h * 0.66), (w * 0.74, h * 0.54), (w * 0.86, h * 0.54)],
+            fill=color
         )
-        draw.text((w * 0.70, h * 0.68), "SELL ZONE", fill="red")
     else:
-        draw.text((w * 0.70, h * 0.68), "WAIT", fill="yellow")
+        draw.text((w * 0.68, h * 0.65), "WAIT / NO CLEAN ENTRY", fill="yellow")
 
     img.save(output_path)
 
 
 # =========================
-# HANDLER
+# TELEGRAM HANDLER
 # =========================
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
@@ -211,52 +460,82 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         return
 
-    input_path = "chart_input.jpg"
-    output_path = "chart_v6_annotated.jpg"
+    input_path = "btc_chart_input.jpg"
+    output_path = "btc_v9_annotated.jpg"
 
     await file.download_to_drive(input_path)
-    await update.message.reply_text("📥 Analyse V6 Smart Money en cours...")
+    await update.message.reply_text("📥 Analyse V9 BTC Hybrid en cours...")
 
     try:
-        r = analyze_smc(input_path)
-        annotate_chart(r, output_path)
+        image_result = analyze_image_chart(input_path)
+        market = market_data_btc()
+        plan = build_trade_plan(image_result, market)
+
+        annotate_image(image_result, plan, output_path)
+
+        reasons_text = "\n".join([f"- {r}" for r in plan["reasons"]])
 
         msg = f"""
-📊 RESULTAT V6 SMART MONEY:
+🔥 ANALYSE PRO V9 BTC HYBRID
 
-Bias / Trend: {r['trend']}
-Momentum: {r['momentum']}
-Structure: {r['structure']}
+📊 ACTIF:
+BTC/USDT
 
-Signal: {r['signal']}
-Confidence: {r['confidence']}%
+💰 DATA MARCHÉ RÉELLE:
+Prix actuel: {market['price']}
+EMA20: {market['ema20']}
+EMA50: {market['ema50']}
+RSI 14: {market['rsi']} ({market['rsi_state']})
+ATR 14: {market['atr']}
+High récent: {market['recent_high']}
+Low récent: {market['recent_low']}
 
-Entry:
-{r['entry']}
+🧭 BIAS:
+API Trend: {market['api_trend']}
+Image Trend: {image_result['visual_trend']}
+Momentum image: {image_result['momentum']}
+Pression récente: {image_result['pressure']}
 
-SL:
-{r['sl']}
+🏗️ STRUCTURE:
+{image_result['structure']}
 
-TP:
-{r['tp']}
+📍 ZONE:
+{image_result['visual_zone']}
 
-Zones détectées:
-- Liquidity High
-- Liquidity Low
-- Order Block approximatif
+🎯 SIGNAL:
+{plan['signal']}
+Confidence: {plan['confidence']}%
 
-Scénario:
-- Entrer seulement après confirmation bougie.
-- Éviter entrée si le prix est déjà trop proche du TP.
-- Attendre retest si breakout fort.
+🚀 ENTRY:
+{plan['entry']}
 
-⚠️ Analyse image approximative, pas garantie.
+🛑 SL:
+{plan['sl']}
+
+✅ TP:
+TP1: {plan['tp1']}
+TP2: {plan['tp2']}
+
+📌 RAISONS:
+{reasons_text}
+
+📈 SCÉNARIO PRINCIPAL:
+{plan['scenario']}
+
+❌ INVALIDATION:
+{plan['invalidation']}
+
+🧠 CONSEIL TRADER:
+{plan['conseil']}
+
+⚠️ Analyse éducative/indicative. Pas de garantie.
 """
+
         await update.message.reply_photo(photo=open(output_path, "rb"))
         await update.message.reply_text(msg)
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Erreur V6: {e}")
+        await update.message.reply_text(f"❌ Erreur V9 BTC: {e}")
 
 
 # =========================
@@ -269,8 +548,9 @@ if __name__ == "__main__":
     threading.Thread(target=run_health_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
 
-    print("Bot V6 Smart Money lancé 🔥")
+    print("Bot V9 BTC Hybrid lancé 🔥")
     app.run_polling()
