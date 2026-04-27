@@ -1,23 +1,57 @@
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from PIL import Image
 
-TOKEN = "8225959243:AAFPByF33ZXIH69oekdqmcKudU8EDft5gJc"
 
+# =========================
+# CONFIG
+# =========================
+TOKEN = os.getenv("TOKEN")
+
+
+# =========================
+# MINI SERVER POUR RENDER
+# =========================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
+# =========================
+# TELEGRAM START
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 Chart Vision Bot V4 PRO Ready 🔥\nAlefaso screenshot chart!")
+    await update.message.reply_text(
+        "📊 Chart Vision Bot V4 PRO Ready 🔥\nAlefaso screenshot chart!"
+    )
 
+
+# =========================
+# ANALYSE CHART V4 PRO
+# =========================
 def analyze_chart_v4(image_path):
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
 
-    chart = img.crop((int(w*0.05), int(h*0.13), int(w*0.90), int(h*0.68)))
+    chart = img.crop((int(w * 0.05), int(h * 0.13), int(w * 0.90), int(h * 0.68)))
     cw, ch = chart.size
 
-    left = chart.crop((0, 0, int(cw*0.30), ch))
-    mid = chart.crop((int(cw*0.35), 0, int(cw*0.65), ch))
-    right = chart.crop((int(cw*0.70), 0, cw, ch))
-    last = chart.crop((int(cw*0.85), 0, cw, ch))
+    left = chart.crop((0, 0, int(cw * 0.30), ch))
+    mid = chart.crop((int(cw * 0.35), 0, int(cw * 0.65), ch))
+    right = chart.crop((int(cw * 0.70), 0, cw, ch))
+    last = chart.crop((int(cw * 0.85), 0, cw, ch))
 
     def dark_points(part):
         pts = []
@@ -38,11 +72,13 @@ def analyze_chart_v4(image_path):
         pts = dark_points(part)
         bull = 0
         bear = 0
+
         for x, y, r, g, b in pts:
             if b > r + 20:
                 bull += 1
             elif r > b + 20:
                 bear += 1
+
         if bull > bear * 1.2:
             return "BULLISH"
         elif bear > bull * 1.2:
@@ -80,6 +116,7 @@ def analyze_chart_v4(image_path):
         support_y = ch * 0.75
 
     price_y = right_y
+
     price_pos = round((1 - price_y / ch) * 100, 1)
     support_pos = round((1 - support_y / ch) * 100, 1)
     resistance_pos = round((1 - resistance_y / ch) * 100, 1)
@@ -111,6 +148,7 @@ def analyze_chart_v4(image_path):
         sl = "Sous dernier creux / support visuel"
         tp = "Résistance récente"
         comment = "Trend UP + momentum bullish + pression acheteuse."
+
     elif trend == "DOWN" and momentum == "BEARISH" and pressure == "BEARISH" and zone != "PROCHE SUPPORT":
         signal = "SELL"
         confidence = 82
@@ -118,6 +156,7 @@ def analyze_chart_v4(image_path):
         sl = "Au-dessus dernier sommet / résistance"
         tp = "Support récent"
         comment = "Trend DOWN + momentum bearish + pression vendeuse."
+
     elif fakeout == "REJET SUPPORT POSSIBLE":
         signal = "BUY"
         confidence = 74
@@ -125,6 +164,7 @@ def analyze_chart_v4(image_path):
         sl = "Sous support"
         tp = "Milieu du range puis résistance"
         comment = "Prix proche support avec rejet possible."
+
     elif fakeout == "REJET RESISTANCE POSSIBLE":
         signal = "SELL"
         confidence = 74
@@ -132,6 +172,7 @@ def analyze_chart_v4(image_path):
         sl = "Au-dessus résistance"
         tp = "Milieu du range puis support"
         comment = "Prix proche résistance avec rejet possible."
+
     elif breakout != "NO":
         signal = "WAIT"
         confidence = 68
@@ -139,6 +180,7 @@ def analyze_chart_v4(image_path):
         sl = "Selon retest"
         tp = "Prochaine zone"
         comment = breakout
+
     else:
         signal = "WAIT"
         confidence = 58
@@ -162,9 +204,13 @@ def analyze_chart_v4(image_path):
         "price_pos": price_pos,
         "support_pos": support_pos,
         "resistance_pos": resistance_pos,
-        "comment": comment
+        "comment": comment,
     }
 
+
+# =========================
+# HANDLE IMAGE
+# =========================
 async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
         file = await update.message.photo[-1].get_file()
@@ -213,7 +259,16 @@ Commentaire:
     except Exception as e:
         await update.message.reply_text(f"❌ Erreur analyse V4: {e}")
 
+
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
+    if not TOKEN:
+        raise ValueError("TOKEN tsy hita. Ampidiro ao Render Environment Variables.")
+
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
