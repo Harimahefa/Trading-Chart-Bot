@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 
-TOKEN = os.getenv("8225959243:AAFPByF33ZXIH69oekdqmcKudU8EDft5gJc")
+TOKEN = os.getenv("TOKEN")
 
 
 # =========================
